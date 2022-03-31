@@ -1,5 +1,5 @@
 ---
-title: "RPG599 Part 5"
+title: "RPG 599 Part 5"
 output: html_document
 author:
   - Han Yu, Department of Biostatistics and Bioinformatics
@@ -11,31 +11,41 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r, echo=TRUE, message=FALSE, warning=FALSE}
-library(glmnet)
-library(doBy)
-library(ggplot2)
-library(ggsci)
+library("glmnet")
+library("doBy")
+library("ggplot2")
+library("ggsci")
 source("MERGE.R")
 source("ENet_CV.R")
 ```
 
-## Process the data
+### Data processing
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+Prepare the gene expression data.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 df_exp_0 <- read.csv(file = "patient_expression.csv", stringsAsFactors = FALSE)
 df_exp_0 <- subset(df_exp_0, !is.na(UID) & UID!="")
 df_exp_1 <- summaryBy(.~UID, df_exp_0, FUN = "mean", keep.names = TRUE)
 exp_mat <- as.matrix(df_exp_1[, -(1:2)])
 rownames(exp_mat) <- df_exp_1$UID
 colnames(exp_mat)[23] <- "AML062"
+```
 
+Prepare the drug response data.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 df_auc_0 <- read.csv(file = "patient_auc.csv", stringsAsFactors = FALSE)
 df_auc_1 <- subset(df_auc_0, X53.drugs == 1)
 auc_mat <- as.matrix(df_auc_1[, -(1:2)])
 rownames(auc_mat) <- df_auc_1$UID
 colnames(auc_mat) <- gsub("\\.", "", colnames(auc_mat))
 auc_mat_1 <- t(auc_mat)
+```
 
+Prepare the gene feature data.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 df_feature_0 <- read.csv(file = "driver_feature.csv", stringsAsFactors = FALSE)
 colnames(df_feature_0)[4] <- "ExpressionHub"
 colnames(df_feature_0)[6] <- "CNV"
@@ -43,71 +53,110 @@ duplicates <- duplicated(df_feature_0$GENE)
 df_feature_1 <- df_feature_0[!duplicates, ]
 feature_mat <- df_feature_1[, 3:7]
 rownames(feature_mat) <- df_feature_1$GENE
+```
 
+We select the genes that are present in both gene expression and gene feature data. We further ensure each row in these two matrices corresponds to the same gene.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 genes_overlap <- intersect(rownames(exp_mat), rownames(feature_mat))
-
 exp_mat <- exp_mat[genes_overlap, ]
 feature_mat <- feature_mat[genes_overlap, ]
-exp_mat_1 <- t(exp_mat) # transposed for elastic net
-feature_mat <- scale(feature_mat)
+exp_mat_1 <- t(exp_mat)
+```
 
-exp_mat_training <- t(scale(exp_mat_1[1:15, ]))
-auc_mat_training <- t(scale(auc_mat_1[1:15, ]))
+Check the dimensions of the data. The expression matrix is for 30 patients $\times$ 16839 genes. The AUC matrix is for 30 patients $\times$ 53 drugs. The gene feature matrix is for 16839 genes $\times$ 5 gene features. 
 
-exp_mat_test <- t(scale(exp_mat_1[16:30, ]))
-auc_mat_test <- t(scale(auc_mat_1[16:30, ]))# auc_mat[, 16:30]
-
-dim(exp_mat_training)
-dim(auc_mat_training)
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+dim(exp_mat_1)
+dim(auc_mat_1)
 dim(feature_mat)
 ```
 
-## Fit the MERGE model
+For demonstration purpose, we arbitrarily selected the first 15 patients as the training set and the remaining patients as the test set. Before modeling, the data needs to be starndardized to have unit variances. Note that the MERGE algorithm requires genes at the rows and patients at the columns, so the matrix needs to be transposed using t().
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
-merge_fit <- MERGE(x_norm = exp_mat_training, 
-                   y_norm = auc_mat_training, 
-                   Fnorm = feature_mat,
-                   lambda0 = 20, init='zero')
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+exp_mat_training <- t(scale(exp_mat_1[1:15, ]))
+auc_mat_training <- t(scale(auc_mat_1[1:15, ]))
+exp_mat_test <- t(scale(exp_mat_1[16:30, ]))
+auc_mat_test <- t(scale(auc_mat_1[16:30, ]))
+feature_mat <- scale(feature_mat)
 ```
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+### Fit the MERGE model
 
+For implementation of the MERGE algorithm, we just set the hyperparameter $\lambda=20$ for convenience. This was selected in the article by cross-validation. In practice, we need to select $\lambda$ by implementing the cross-validation for each data splitting.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+merge_fit <- MERGE(x_norm = exp_mat_training, y_norm = auc_mat_training, 
+                   Fnorm = feature_mat, lambda0 = 20, init='zero')
+```
+
+Through the MERGE algorithm, we obtain the matrix of weights $W$. The element in row $i$ and column $j$, which is $w_{ij}$, corresponds to the association between the $i$th gene and $j$th drug.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+dim(merge_fit$W)
+```
+
+The article did not provide the implementation for making predictions. A straightforward way to make predictions of the response to drug $j$ of patient $n$ is to calculate a weighted sum 
+$$ \hat{y}_{jn}^\prime = \sum_iw_{ij}x_{jn} $$
+Since we want to calculate the standardized response, we need to standardize the predicted response to unit variance. To do this, we divide the $\hat{y}_{jn}^\prime$ by the sqare root of its variance (standard error). The variance of $\hat{y}_{jn}^\prime$ can be estimated by the following
+
+$$ Var(\hat{y}_{jn}^\prime) = Var(\sum_iw_{ij}x_{jn}) = \sum_iw_{ij}^2Var(x_{jn})+2\sum_{j,k<j}w_{ij}w_{ik}Cov(x_{jn}, x_{kn}) $$
+This can be simplified uisng matrix operations, 
+
+$$ Y^\prime_n = WX_n $$
+$$ Var(Y^\prime_n) = W^T\Sigma W$$
+where $\Sigma$ is the covariance matrix of $X$, and $W^T$ is the transpose of $W$ (switching rows and columns). The final prediction is 
+
+$$ \hat{y}_{jn}= \hat{y}_{jn}^\prime/\sqrt{Var(\hat{y}_{jn}^\prime)} $$
+
+Implementation of the prediction step is given below.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
 pred <- t(merge_fit$W) %*% exp_mat_test
 cor_mat <- cor(t(exp_mat_training))
 var_vec <- t(merge_fit$W) %*% cor_mat %*% merge_fit$W
 var_vec_1 <- diag(var_vec)
 sd_vec <- sqrt(var_vec_1) 
 pred <- pred/sd_vec
+```
 
+We can calculate the Spearman correlation coefficient for each drug and calculate the mean correlation coefficient. The distribution of the correlations is shown as a histogram.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 cor_vec <- c()
 for (i in 1:53) {
   cor_vec[i] <- cor(pred[i,], auc_mat_test[i,], method = "spearman")
 }
-```
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
 hist(cor_vec)
-```
-
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
-plot(pred[1,], auc_mat_test[1,], xlim=c(-2, 2), ylim=c(-2,2), 
-     xlab="Predicted AUC", ylab="Observed AUC")
-abline(a=0, b=1, lty=2)
 mean(cor_vec)
 ```
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+We can further visualize the agreement between predicted and observed responses of the first drug in the test set.  
 
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+plot(pred[1,], auc_mat_test[1,], xlim=c(-2, 2), ylim=c(-2,2), 
+     xlab="Predicted AUC", ylab="Observed AUC")
+abline(a=0, b=1, lty=2)
+```
+
+### Elastic Net
+
+Next we implement the elastic net regression. Firstly, a set of hyperparameters $\alpha$ and $\lambda$ were generated for random search. The generated hyperparameters are visualized below.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 set.seed(12345)
 alpha <- runif(50, 0, 1)
 lambda <- 10^runif(50, -3, 1)
 plot(alpha, log10(lambda))
-
 ```
 
+We use the cv_elasticnet function to perform the cross-validation, and then use the selected hyperparameters to build the model. Note that for elastic net we will build a separate model for each drug. The prediction performence of elastic net is not as good as MERGE, at least for the current data split.
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+exp_mat_training_1 <- t(exp_mat_training)
+exp_mat_test_1 <- t(exp_mat_test)
 
 cor_vec_enet <- c()
 set.seed(12345)
@@ -126,4 +175,50 @@ for (i in 1:53) {
 cor_vec_enet[is.na(cor_vec_enet)] <- 0
 mean(cor_vec_enet)
 ```
+
+Next, we want to see if we can improve the model by only using the hub genes. First, we select the genes with top 20\% hubness.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+gene_hub <- which(feature_mat[, 2]>quantile((feature_mat[, 2]), 0.8))
+```
+
+### Experiment
+
+Here, we only use the hub genes to build the elastic net models. The model performance is slightly improved.
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+cor_vec_hub <- c()
+set.seed(12345)
+for (i in 1:53) {
+  y_train <- auc_mat_training[i,]
+  y_test <- auc_mat_test[i,]
+  cv_en_fit <- cv_elasticnet(exp_mat_training_1[, gene_hub], y_train, alpha, lambda, nfolds = 5)
+  sel <- which.max(cv_en_fit$corrs)
+  
+  glmnet_fit <- glmnet(exp_mat_training_1[, gene_hub], y_train, alpha = alpha[sel], lambda = lambda[sel])
+  glm_pred <- predict(glmnet_fit, exp_mat_test_1[, gene_hub])[,1]
+  
+  cor_vec_hub[i] <- cor(glm_pred, y_test, method = "spearman")
+  cat(i, ", ")
+}
+
+cor_vec_hub[is.na(cor_vec_hub)] <- 0
+mean(cor_vec_hub)
+```
+
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+df_1 <- data.frame(Method = "MERGE", Corr = cor_vec, Drug = rownames(auc_mat_training))
+df_2 <- data.frame(Method = "ENet", Corr = cor_vec_enet, Drug = rownames(auc_mat_training))
+df_3 <- data.frame(Method = "ENet-Hub", Corr = cor_vec_hub, Drug = rownames(auc_mat_training))
+df_plot <- rbind(df_1, df_2)
+df_plot <- rbind(df_plot, df_3)
+ggplot(df_plot, aes(x=Method, y=Corr, fill=Method)) + 
+  geom_violin(trim=TRUE) +
+  geom_boxplot(width=0.1, fill="white") +
+  labs(x="", y = "Correlation") +
+  scale_fill_npg() +
+  theme_classic()
+```
+
 
