@@ -1,0 +1,129 @@
+---
+title: "RPG599 Part 5"
+output: html_document
+author:
+  - Han Yu, Department of Biostatistics and Bioinformatics
+date: "04/05/2022"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(glmnet)
+library(doBy)
+library(ggplot2)
+library(ggsci)
+source("MERGE.R")
+source("ENet_CV.R")
+```
+
+## Process the data
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+df_exp_0 <- read.csv(file = "patient_expression.csv", stringsAsFactors = FALSE)
+df_exp_0 <- subset(df_exp_0, !is.na(UID) & UID!="")
+df_exp_1 <- summaryBy(.~UID, df_exp_0, FUN = "mean", keep.names = TRUE)
+exp_mat <- as.matrix(df_exp_1[, -(1:2)])
+rownames(exp_mat) <- df_exp_1$UID
+colnames(exp_mat)[23] <- "AML062"
+
+df_auc_0 <- read.csv(file = "patient_auc.csv", stringsAsFactors = FALSE)
+df_auc_1 <- subset(df_auc_0, X53.drugs == 1)
+auc_mat <- as.matrix(df_auc_1[, -(1:2)])
+rownames(auc_mat) <- df_auc_1$UID
+colnames(auc_mat) <- gsub("\\.", "", colnames(auc_mat))
+auc_mat_1 <- t(auc_mat)
+
+df_feature_0 <- read.csv(file = "driver_feature.csv", stringsAsFactors = FALSE)
+colnames(df_feature_0)[4] <- "ExpressionHub"
+colnames(df_feature_0)[6] <- "CNV"
+duplicates <- duplicated(df_feature_0$GENE)
+df_feature_1 <- df_feature_0[!duplicates, ]
+feature_mat <- df_feature_1[, 3:7]
+rownames(feature_mat) <- df_feature_1$GENE
+
+genes_overlap <- intersect(rownames(exp_mat), rownames(feature_mat))
+
+exp_mat <- exp_mat[genes_overlap, ]
+feature_mat <- feature_mat[genes_overlap, ]
+exp_mat_1 <- t(exp_mat) # transposed for elastic net
+feature_mat <- scale(feature_mat)
+
+exp_mat_training <- t(scale(exp_mat_1[1:15, ]))
+auc_mat_training <- t(scale(auc_mat_1[1:15, ]))
+
+exp_mat_test <- t(scale(exp_mat_1[16:30, ]))
+auc_mat_test <- t(scale(auc_mat_1[16:30, ]))# auc_mat[, 16:30]
+
+dim(exp_mat_training)
+dim(auc_mat_training)
+dim(feature_mat)
+```
+
+## Fit the MERGE model
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+merge_fit <- MERGE(x_norm = exp_mat_training, 
+                   y_norm = auc_mat_training, 
+                   Fnorm = feature_mat,
+                   lambda0 = 20, init='zero')
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+
+pred <- t(merge_fit$W) %*% exp_mat_test
+cor_mat <- cor(t(exp_mat_training))
+var_vec <- t(merge_fit$W) %*% cor_mat %*% merge_fit$W
+var_vec_1 <- diag(var_vec)
+sd_vec <- sqrt(var_vec_1) 
+pred <- pred/sd_vec
+
+cor_vec <- c()
+for (i in 1:53) {
+  cor_vec[i] <- cor(pred[i,], auc_mat_test[i,], method = "spearman")
+}
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+hist(cor_vec)
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+plot(pred[1,], auc_mat_test[1,], xlim=c(-2, 2), ylim=c(-2,2), 
+     xlab="Predicted AUC", ylab="Observed AUC")
+abline(a=0, b=1, lty=2)
+mean(cor_vec)
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+
+set.seed(12345)
+alpha <- runif(50, 0, 1)
+lambda <- 10^runif(50, -3, 1)
+plot(alpha, log10(lambda))
+
+```
+
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE}
+
+cor_vec_enet <- c()
+set.seed(12345)
+for (i in 1:53) {
+  y_train <- auc_mat_training[i,]
+  y_test <- auc_mat_test[i,]
+  cv_en_fit <- cv_elasticnet(exp_mat_training_1, y_train, alpha, lambda, nfolds = 5)
+  sel <- which.max(cv_en_fit$corrs)
+  
+  glmnet_fit <- glmnet(exp_mat_training_1, y_train, alpha = alpha[sel], lambda = lambda[sel])
+  glm_pred <- predict(glmnet_fit, exp_mat_test_1)[,1]
+  
+  cor_vec_enet[i] <- cor(glm_pred, y_test, method = "spearman")
+}
+
+cor_vec_enet[is.na(cor_vec_enet)] <- 0
+mean(cor_vec_enet)
+```
+
