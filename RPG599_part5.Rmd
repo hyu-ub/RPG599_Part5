@@ -72,6 +72,19 @@ dim(auc_mat_1)
 dim(feature_mat)
 ```
 
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+exp_mat_1[1:5, 1:5]
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+auc_mat_1[1:5, 1:5]
+```
+
+```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+feature_mat[1:5, 1:5]
+```
+
+
 For demonstration purpose, we arbitrarily selected the first 15 patients as the training set and the remaining patients as the test set. Before modeling, the data needs to be starndardized to have unit variances. Note that the MERGE algorithm requires genes at the rows and patients at the columns, so the matrix needs to be transposed using t().
 
 ```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
@@ -129,13 +142,13 @@ for (i in 1:53) {
   cor_vec[i] <- cor(pred[i,], auc_mat_test[i,], method = "spearman")
 }
 
-hist(cor_vec)
+hist(cor_vec, xlab = "Correlation Coefficients", main="")
 mean(cor_vec)
 ```
 
 We can further visualize the agreement between predicted and observed responses of the first drug in the test set.  
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+```{r, fig.width=4, fig.height=4.5, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 plot(pred[1,], auc_mat_test[1,], xlim=c(-2, 2), ylim=c(-2,2), 
      xlab="Predicted AUC", ylab="Observed AUC")
 abline(a=0, b=1, lty=2)
@@ -145,7 +158,7 @@ abline(a=0, b=1, lty=2)
 
 Next we implement the elastic net regression. Firstly, a set of hyperparameters $\alpha$ and $\lambda$ were generated for random search. The generated hyperparameters are visualized below.
 
-```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+```{r, fig.width=4, fig.height=4.5, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 set.seed(12345)
 alpha <- runif(50, 0, 1)
 lambda <- 10^runif(50, -3, 1)
@@ -176,13 +189,13 @@ cor_vec_enet[is.na(cor_vec_enet)] <- 0
 mean(cor_vec_enet)
 ```
 
+### Experiment
+
 Next, we want to see if we can improve the model by only using the hub genes. First, we select the genes with top 20\% hubness.
 
 ```{r, fig.width=4, fig.height=4, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
 gene_hub <- which(feature_mat[, 2]>quantile((feature_mat[, 2]), 0.8))
 ```
-
-### Experiment
 
 Here, we only use the hub genes to build the elastic net models. The model performance is slightly improved.
 
@@ -199,7 +212,6 @@ for (i in 1:53) {
   glm_pred <- predict(glmnet_fit, exp_mat_test_1[, gene_hub])[,1]
   
   cor_vec_hub[i] <- cor(glm_pred, y_test, method = "spearman")
-  cat(i, ", ")
 }
 
 cor_vec_hub[is.na(cor_vec_hub)] <- 0
