@@ -7,3 +7,7 @@ This repository is for the course RPG 599. It is based on the data and algorithm
 To get started, download this repository and set it as your working directory, then follow the link below or open the RPG599_part5.html file.
 
 https://htmlpreview.github.io/?https://github.com/hyu-ub/RPG599_Part5/blob/main/RPG599_part5.html
+
+A walk-through of the MERGE algorithm is provided below,
+
+https://htmlpreview.github.io/?https://github.com/hyu-ub/RPG599_Part5/blob/main/RPG599_MERGE.html
