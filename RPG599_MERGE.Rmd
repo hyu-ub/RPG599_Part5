@@ -1,0 +1,342 @@
+---
+title: "RPG 599 Part 5"
+output: html_document
+author:
+  - Han Yu, Department of Biostatistics and Bioinformatics
+date: "04/11/2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+  
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+####################################################################################
+## 
+## The implementation of MERGE algorithm is obtained from
+## https://www.nature.com/articles/s41467-017-02465-5
+## It is used here for eductional purpose
+## Reference:
+## Lee, Su-In, et al. "A machine learning approach to integrate big data for precision 
+## medicine in acute myeloid leukemia." Nature communications 9.1 (2018): 1-13.
+## License:
+## http://creativecommons.org/licenses/by/4.0/
+##
+####################################################################################
+```
+
+This note is a walk-through of MERGE algorithm. Knowledge of only matrix multiplication and basic differentiation is needed. 
+
+### Review of related mathematical concepts
+
+**Matrix multiplication**: If A is an $m \times n$ matrix and B is an $n \times p$ matrix,
+
+$$A=\begin{bmatrix}
+a_{11} & a_{12} & \dots & a_{1n}\\
+\color{blue}{a_{21}} & \color{blue}{a_{22}} & \color{blue}{\dots} & \color{blue}{a_{2n}}\\
+\vdots & \vdots & \ddots & \vdots\\
+a_{m1}  & a_{m2} & \ddots & a_{mn}\\
+\end{bmatrix},  B=\begin{bmatrix}
+\color{blue}{b_{11}} & b_{12} & \dots & b_{1p}\\
+\color{blue}{b_{21}} & b_{22} & \dots & b_{2p}\\
+\color{blue}{\vdots} & \vdots & \ddots & \vdots\\
+\color{blue}{b_{n1}}  & b_{n2} & \ddots & b_{np}\\
+\end{bmatrix}
+$$
+
+the matrix product $C = AB$ is defined to be the $m \times p$ matrix
+
+$$C=\begin{bmatrix}
+c_{11} & c_{12} & \dots & c_{1p}\\
+\color{blue}{c_{21}} & c_{22} & \dots & c_{2p}\\
+\vdots & \vdots & \ddots & \vdots\\
+c_{n1}  & c_{n2} & \ddots & c_{np}\\
+\end{bmatrix}.$$
+
+The $(i,j)$th element in $C$ is $$c_{ij}=a_{i1}b_{1j}+a_{i1}b_{1j}+\dots+a_{in}b_{nj}=\sum^n_{k=1}a_{ik}b_{kj}.$$
+For example, the element $c_{21}$ (blue) is obtained by multiplying row 2 of $A$ by column 1 of $B$, which is done by multiplying corresponding entries together and then adding the results.
+
+**Transpose of a matrix:** The transpose of a matrix $A$ is denoted by $A^T$. Formally, the $i$th row, $j$th column element of $A^T$ is the $j$th row, $i$th column element of $A$:
+
+$$[A^T]_{ij} = [A]_{ji}$$ 
+If $A$ is an $m \times n$ matrix, then $A^T$ is an $n \times m$ matrix. 
+
+Example:
+
+$$A=\begin{bmatrix}
+1 & 2 \\
+3 & 4 \\
+5 & 6 \\
+\end{bmatrix},  A^T=\begin{bmatrix}
+1 & 3 & 5 \\
+2 & 4 & 6\\
+\end{bmatrix}
+$$
+
+**Derivatives involved**
+
+If $f(x)=ax$, where a is a constant, then $\frac{df(x)}{dx}=ax$.
+
+If $f(x)=x^2$, then $\frac{df(x)}{dx}=2x$.
+
+If $f(x)=\log(x)$, then $\frac{df(x)}{dx}=\frac{1}{x}$ for $x>0$.
+
+If $f(x)=a$ is a constant, then $\frac{df(x)}{dx}=0$.
+
+For a compound function, $f(g(x))$, we have $\frac{df(g(x))}{dx}=\frac{df}{du}\frac{du}{dx}$. Therefore, if we have $f(x)=(ax+b)^2$, then $\frac{df(x)}{dx}=2a(ax+b)$.
+
+If $f$ is a multivariate function, e.g. $f(x,y)$ is a function of two variable $x$ and $y$, then the partial derivative of $f$ is its derivative with respect to one of those variables, with the others held constant. For example, if $f(x,y)=x^2+xy+y^2$, then
+$$\frac{\partial f}{\partial x} = 2x+y, \frac{\partial f}{\partial y} = x+2y$$
+
+The gradient of $f(x_1, x_2, \dots, x_p)$ is obtained as a vector of the partial derivatives,
+
+$$\nabla f=\begin{bmatrix}
+\frac{\partial f}{\partial x_1}  \\
+\frac{\partial f}{\partial x_2}  \\
+\vdots  \\
+\frac{\partial f}{\partial x_p}\\
+\end{bmatrix}.$$
+
+For the function $f(x,y)=x^2+xy+y^2$, the gradient is
+
+$$\nabla f=\begin{bmatrix}
+2x+y  \\
+x+2y \\
+\end{bmatrix}.$$
+
+### MERGE implemention
+
+First we prepare the data.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE, cache=TRUE}
+library(doBy)
+
+df_exp_0 <- read.csv(file = "patient_expression.csv", stringsAsFactors = FALSE)
+df_exp_0 <- subset(df_exp_0, !is.na(UID) & UID!="")
+df_exp_1 <- summaryBy(.~UID, df_exp_0, FUN = "mean", keep.names = TRUE)
+exp_mat <- as.matrix(df_exp_1[, -(1:2)])
+rownames(exp_mat) <- df_exp_1$UID
+colnames(exp_mat)[23] <- "AML062"
+
+df_auc_0 <- read.csv(file = "patient_auc.csv", stringsAsFactors = FALSE)
+df_auc_1 <- subset(df_auc_0, X53.drugs == 1)
+auc_mat <- as.matrix(df_auc_1[, -(1:2)])
+rownames(auc_mat) <- df_auc_1$UID
+colnames(auc_mat) <- gsub("\\.", "", colnames(auc_mat))
+auc_mat_1 <- t(auc_mat)
+
+df_feature_0 <- read.csv(file = "driver_feature.csv", stringsAsFactors = FALSE)
+colnames(df_feature_0)[4] <- "ExpressionHub"
+colnames(df_feature_0)[6] <- "CNV"
+duplicates <- duplicated(df_feature_0$GENE)
+df_feature_1 <- df_feature_0[!duplicates, ]
+feature_mat <- df_feature_1[, 3:7]
+rownames(feature_mat) <- df_feature_1$GENE
+
+genes_overlap <- intersect(rownames(exp_mat), rownames(feature_mat))
+exp_mat <- exp_mat[genes_overlap, ]
+feature_mat <- feature_mat[genes_overlap, ]
+exp_mat_1 <- t(exp_mat)
+
+exp_mat_training <- t(scale(exp_mat_1[1:15, ]))
+auc_mat_training <- t(scale(auc_mat_1[1:15, ]))
+exp_mat_test <- t(scale(exp_mat_1[16:30, ]))
+auc_mat_test <- t(scale(auc_mat_1[16:30, ]))
+feature_mat <- scale(feature_mat)
+
+```
+
+Pass the parameters.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+x_norm = exp_mat_training 
+y_norm = auc_mat_training
+Fnorm = feature_mat
+lambda0 = 20
+init='zero'
+```
+
+There are $n_g=16839$ genes, $n_s=15$ patients, $n_d=53$ drugs. In addition, there are 5 gene features.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+dim(x_norm)
+dim(y_norm)
+dim(Fnorm)
+```
+
+The x_norm is $16839\times15$ matrix of gene expressions, so there are 16839 rows and 15 columns. The $i$th row corresponds to the $i$th gene ($i=1, \dots, 16839$), while the $n$th column corresponds to the $n$th patient $n=1, \dots, 15$. A part of x_norm is shown below.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+x_norm[1:5, 1:5]
+```
+
+
+The y_norm is $53\times15$ matrix of AUCs. The $j$th row corresponds to the $j$th drug ($j=1, \dots, 53$), while the $n$th column corresponds to the $n$th patient.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+y_norm[1:5, 1:5]
+```
+
+The Fnorm is $16839\times5$ matrix of gene features. The $i$th row corresponds to the $i$th gene ($i=1, \dots, 16839$), while the $k$th column corresponds to the $k$th gene feature.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+Fnorm[1:5,]
+```
+
+The number of genes, samples, and drugs are denoted by $n_g$, $n_s$ and $n_d$, respectively.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+ngenes = nrow(x_norm)
+nsamples = ncol(x_norm)
+ndrugs = nrow(y_norm)
+```
+
+The vector $v$ is one of the parameters we want to estimate. It is a vector of 5 elements (dimention is $5\times1$), as we have 5 gene features. As we are going to use iterative method to solve $v$, we need to set an initial value. We can choose to set the initial $v$ as zeros or random numbers from a standard normal distribution.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+if (init == 'zero') {
+	vinit = matrix(0, ncol=1, nrow=ncol(Fnorm))
+} else if (init == 'rnd') {
+	vinit = matrix(rnorm(ncol(Fnorm)), ncol=1)
+}
+v = vinit
+```
+
+To make the following calcualtion easier, we first obtain the product of $X$ and the transpose of $Y$, which is $Y^T$. The $i,j$th element of $XY^T$ corresponds to $i$th gene and $j$th drug, and was expressed as $\sum_n x_j^{(n)}y_i^{(n)}$. As $X$ and $Y$ are standardized, The $i,j$th element can be interpreted as the $n_s$ times the raw correlation between the expression of the $i$th gene and the response to the $j$th drug. However, here it is only a intermediate result that will be used for computations shortly after.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+xy = x_norm %*% t(y_norm)
+dim(xy)
+xy[1:5, 1:5]
+```
+
+The following code calculates the initial $\lambda$ (here we use the $\lambda_0$ to denote the hyperparameter set by user). The code Fnorm %*% v calculates product $Fv$, which is a $n_g\times1$ vector. The $i$th element is $\sum^5_{k=1}v_kd_{ik}$ is the MERGE score of the $i$th gene. Then we calculate $\lambda$ as
+$$\lambda = \lambda_0 - Fv$$
+which is the precision (inverse of variance) of the prior distribution of $w$. A gene with larger MERGE score will have smaller precision (larger variance) of the prior distribution, thereby weaker shrinkage towards zero. The following code shows the $\lambda$ of the first six genes. As the inital $v$'s are zeros. The $\lambda$ all genes are the same as $\lambda_0$. The $\lambda$ will be interatively updated.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+lambda = lambda0 - Fnorm %*% v
+dim(lambda)
+head(lambda)
+```
+
+
+Remember the loss function is in the form below, we will search for $w$ and $v$ that minimize the $L$ using block coordinate descent. This is an iterative method. 
+
+$$L= \sum_{i,j}\{\sum_n(y_j^{(n)}-w_{ij}x_i^{(n)})^2\} + \sum_{i,j}(\lambda-\sum^5_{k=1}v_kd_{ik})w^2_{ij}-\sum_{i,j}\log(\lambda-\sum^5_{k=1}v_kd_{ik})$$
+
+The outer loop controls the iterations of the block coordinate descent. In each iteration, we will first fix $v$ and optimize with respect to $w$. Then, we will fix $w$ and optimize with respect to $v$.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+# for (iter in 1:10) {...}
+```
+
+The first step is to find $W$ that minimize the loss $L$ given $v$. This is achieved using the following code.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+W = xy / ( nsamples - 1 + lambda[,rep(1,ndrugs)])
+```
+
+This can be derived as below, which involves taking the derivative $\frac{\partial L}{\partial w_{ij}}$, and find $w_{ij}$ satisfies $\frac{\partial L}{\partial w_{ij}} =0$.
+
+The derivative is,
+$$\frac{\partial L}{\partial w_{ij}} = -2\sum_n(y_j^{(n)}-w_{ij}x_i^{(n)})x_i^{(n)}+2(\lambda_0-\sum^5_{k=1}v_kd_{ik})w_{ij}$$
+$$\frac{\partial L}{\partial w_{ij}} = -2\sum_n x_i^{(n)}y_j^{(n)}+2w_{ij}\sum_n x_i^{2(n)}+2(\lambda_0-\sum^5_{k=1}v_kd_{ik})w_{ij}$$
+Note that $x$ are standardized with zero means and variances of one. Therefore, $\frac{1}{n-1}\sum_n x_j^{(n)2}=1$, and thus $\sum_n x_j^{(n)2}=n-1$.
+
+$$\frac{\partial L}{\partial w_{ij}} = -2\sum_n x_i^{(n)}y_j^{(n)}+2(n_s-1)w_{ij}+2(\lambda-\sum^5_{k=1}v_kd_{ik})w_{ij}
+=-2\sum_n x_i^{(n)}y_j^{(n)}+2(n_s-1+\lambda-\sum^5_{k=1}v_kd_{ik})w_{ij}$$
+
+To solve for $w_{ij}$, we set $\frac{\partial L}{\partial w_{ij}} = 0$, thus
+
+$$\sum_n x_j^{(n)}y_i^{(n)}= (n_s-1+\lambda_0-\sum^5_{k=1}v_kd_{ik})w_{ij}$$
+and,
+$$w_{ij} = \frac{\sum_n x_j^{(n)}y_i^{(n)} } {(n_s-1+\lambda_0-\sum^5_{k=1}v_kd_{ik})} = \frac{\sum_n x_j^{(n)}y_i^{(n)} } {(n_s-1+\lambda_i)}$$
+For implementation, note the numerator in the equation is the $i,j$th element of the matrix $XY^T$, which has dimension $n_g\times n_d$, so we can simplify the code using matrix operations. Remember \lambda is a vector of length $n_g$. The code lambda[,rep(1,ndrugs)] replicates lambda $n_d$ times and expand into a matrix with dimention $n_g\times n_d$. The elements in the $i$th row of this matrix are all $\lambda_i$. Thus, the denominator in the code is a matrix with the same dimension, and the elements in the $i$th row are all $n_s-1+\lambda_i$. The division of two matrices $C=A/B$ with the same dimensions will return the element-wise division results $C_{ij}=A_{ij}/B_{ij}$. Therefore, the $i,j$th element of $W$ in the code will be $w_{ij}$ in the equation above.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+W = xy / ( nsamples - 1 + lambda[,rep(1,ndrugs)])
+dim(W)
+W[1:5, 1:5]
+```
+
+The rowSums function takes the summation of each of the matrix $W$ after taking element-wise square. The resulting vector sumW2 has $n_g$ elements. The $i$th element is $\sum_jw_{ij}^2$. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+sumW2 = matrix(rowSums(W^2), nrow=1)
+```
+
+Update the objective or loss function.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+obj0 = 0
+for (i in 1:ngenes) {
+	obj0 = obj0 + sum((t(W[i,,drop=F]) %*% x_norm[i,,drop=F] - y_norm)^2)
+}	
+```
+
+Second step: optimize with respect to $v$ using gradient descent. To do this, we first obtain $\frac{\partial L}{\partial v_k}$.
+
+$$\frac{\partial L}{\partial v_k}=-\sum_{i,j}w_{ij}^2d_{ik} + \sum_{i,j}\frac{d_{i,k}}{\lambda_0-\sum^5_{k=1}v_kd_{ik}}=
+-\sum_{i}(d_{ik}\sum_jw_{ij}^2) + \sum_{i}\frac{n_dd_{i,k}}{\lambda_i}$$
+
+We firt calculate the first part of the derivative: $-\sum_{i}(d_{ik}\sum_jw_{ij}^2)$. This is also done using matrix operations and the sumW2 obtained above.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=TRUE}
+gradinit = -t(Fnorm) %*% t(sumW2)
+gradinit
+```
+
+This inner loop controls the iterations of gradient descent to solve for $v$.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+# for (it in 1:10) {...}
+```
+
+Now we calculate the secondar part. Using a similar trick, the vector $v$ was expanded to a matrix of dimension $5\times n_g$, transponsed to a $n_g\times 5$ matrix, and then taken elementwise multiplication with Fnorm. After taking rowSums, the tmp is vector with $n_g$ elements. The $i$th element is the MERGE score of the $i$th gene. This needs to be re-calculated in each inner loop as the $v$ get updated.
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+tmp = rowSums(Fnorm * t(as.matrix(v)[,rep(1,ngenes)]))
+```
+
+The code below complete the calculation of the gradient. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+grad = gradinit + ndrugs * colSums(Fnorm / (as.matrix(lambda0 - tmp)[,rep(1,length(v))]))
+grad2 = sum(grad^2)
+grad
+```
+
+The variable preobj records the loss before updating $v$, to make sure the updated $v$ leads to a significant reduction of loss.
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+tt = 0.002
+alphaa = 0.3
+betaa = 0.8
+
+preobj = obj0 + sumW2 %*% (lambda0 - Fnorm %*% v) - ndrugs * sum(log(lambda0 - tmp))
+```
+
+For each step of the descent, we need to find out how far we want to go. This is controled by tt. The tt needs to satisfy the contraint $\lambda_i = \lambda_0-\sum^5_{k=1}v_kd_{ik}>0$ for all genes. Meanwhile, we want the loss after update has a significant reduction. In each iteration, the tt will decay by a factor of 0.8, which is controlled by betaa. When a tt satisfying the conditions is found, the search stops and the $v$ is updated.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+for (biter in 1:200) {
+	newv = v - tt * grad
+		if(sum(Fnorm %*% newv <= lambda0) == ngenes) {
+			tmp = rowSums(Fnorm * t(as.matrix(newv)[,rep(1,ngenes)]))
+			postobj = obj0 + sumW2 %*% (lambda0 - Fnorm %*% newv) - ndrugs * sum(log(lambda0 - tmp))
+			if(is.na(preobj) || postobj < preobj - alphaa * tt * grad2) { 
+				break
+			} else {
+				tt = betaa * tt
+			}
+		} else {
+			tt = betaa * tt
+	}
+}
+v = newv
+```
+
+
+The steps 1 and 2 are repeated for a preset number of iterations, and the final $w$ and $v$ will be returned.
+
+
+
